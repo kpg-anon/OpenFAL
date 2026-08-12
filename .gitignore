@@ -1,0 +1,24 @@
+# --- secrets: never commit -------------------------------------------------
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
+config.ini
+secrets.json
+.credentials
+
+# --- runtime artefacts -----------------------------------------------------
+node_modules/
+outputs/
+*.log
+.srv.log
+.srv.err
+
+# --- editor / OS -----------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

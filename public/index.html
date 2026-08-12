@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OpenFAL</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🪄</text></svg>" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="dot"></span>
+    <div>
+      <h1>OpenFAL</h1>
+      <span class="model" id="modelId">fal-ai/hy-wu-edit</span>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <span class="badge" id="safetyBadge"></span>
+    <button id="balance" class="ghost balance" type="button" title="fal credit balance — click to refresh">–</button>
+    <button id="keyBtn" class="ghost" type="button">API key</button>
+  </div>
+</header>
+
+<nav class="tabs" id="tabs"></nav>
+
+<div id="keyPanel" class="keypanel" hidden>
+  <div class="keypanel-inner">
+    <label for="keyInput">fal API key <span class="muted">(stored in <code>.env</code> on this machine, never sent to the browser again)</span></label>
+    <div class="row">
+      <input id="keyInput" type="password" spellcheck="false" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" />
+      <button id="keySave" class="primary" type="button">Save</button>
+    </div>
+    <p class="muted small">Get a key at <a href="https://fal.ai/dashboard/keys" target="_blank" rel="noopener">fal.ai/dashboard/keys</a>. Requests are proxied through the local server, so the key never reaches this page.</p>
+  </div>
+</div>
+
+<main class="layout">
+
+  <!-- ------------------------------------------------------------- inputs -->
+  <section class="panel panel-left">
+    <div class="panel-head">
+      <h2>Input</h2>
+      <span class="muted small" id="slotHint">drag, click or paste</span>
+    </div>
+
+    <div id="modelNote" class="model-note"></div>
+
+    <div id="slots" class="slots"></div>
+
+    <label class="field">
+      <span class="field-label">Prompt</span>
+      <textarea id="prompt" rows="4" spellcheck="false"
+        placeholder="Using image 1 as the base, put the outfit from image 2 on the person…"></textarea>
+    </label>
+
+    <div class="chips" id="presets">
+      <button type="button" data-p="Using image 1 as the base, dress the person in the outfit from image 2. Keep the face, pose and background unchanged.">outfit transfer</button>
+      <button type="button" data-p="Replace the face of the person in image 1 with the face from image 2. Match lighting, skin tone and head angle.">face swap</button>
+      <button type="button" data-p="Restyle image 1 in the artistic style of image 2 while preserving the original composition.">style transfer</button>
+      <button type="button" data-p="Apply the material and texture from image 2 onto the object in image 1. Keep the shape and lighting consistent.">texture blend</button>
+      <button type="button" data-p="Place the subject from image 2 into the scene of image 1 with matching perspective, scale, shadows and lighting.">scene composite</button>
+    </div>
+
+    <div class="params">
+      <div class="field size-block" id="sizeBlock" data-p="size">
+        <span class="field-label">
+          Output size
+          <output id="sizeCost" class="cost" title="Estimated fal cost: megapixels × rate × images"></output>
+        </span>
+
+        <div class="seg" id="sizeMode">
+          <button type="button" data-mode="auto" class="on">auto</button>
+          <button type="button" data-mode="preset">preset</button>
+          <button type="button" data-mode="custom">exact</button>
+        </div>
+
+        <select id="sizePreset" hidden>
+          <option value="square_hd">square_hd · 1024×1024</option>
+          <option value="square">square · 512×512</option>
+          <option value="portrait_4_3">portrait_4_3 · 768×1024</option>
+          <option value="portrait_16_9">portrait_16_9 · 576×1024</option>
+          <option value="landscape_4_3">landscape_4_3 · 1024×768</option>
+          <option value="landscape_16_9">landscape_16_9 · 1024×576</option>
+        </select>
+
+        <div id="customSize" class="custom-size" hidden>
+          <div class="row wh">
+            <input id="out_w" type="number" min="256" max="4096" step="16" value="1024" title="Width" />
+            <span class="x">×</span>
+            <input id="out_h" type="number" min="256" max="4096" step="16" value="1536" title="Height" />
+            <button id="swapWH" class="ghost icon" type="button" title="Swap width and height">⇄</button>
+            <button id="lockAR" class="ghost icon" type="button" title="Lock aspect ratio while typing">🔗</button>
+          </div>
+
+          <label class="switch">
+            <input id="linkInput" type="checkbox" checked />
+            <span>Scale from input image <span id="baseDims" class="muted small"></span></span>
+          </label>
+
+          <div id="scaleRow" class="row scale-row">
+            <input id="scale" type="range" min="0.25" max="3" step="0.05" value="1" />
+            <output id="scaleOut">1.00×</output>
+            <button id="matchInput" class="ghost small" type="button" title="Reset to 1.00× of the input">1:1</button>
+          </div>
+
+          <div class="row cap-row">
+            <label class="switch cap-switch"><input id="capOn" type="checkbox" checked /><span>cap</span></label>
+            <select id="capSide" title="Which dimension the cap applies to">
+              <option value="long">long side</option>
+              <option value="height">height</option>
+              <option value="width">width</option>
+            </select>
+            <input id="capPx" type="number" min="256" max="4096" step="16" value="2048" />
+            <span class="muted small">px · step</span>
+            <select id="snap" title="Round width/height to a multiple of this">
+              <option value="8">8</option>
+              <option value="16" selected>16</option>
+              <option value="32">32</option>
+              <option value="64">64</option>
+            </select>
+          </div>
+
+          <div id="sizeHint" class="hint muted small"></div>
+        </div>
+      </div>
+
+      <label class="field" id="aspectField">
+        <span class="field-label">Aspect ratio</span>
+        <select id="aspect_ratio"></select>
+      </label>
+
+      <!-- per-model controls are generated from the registry into here -->
+      <div id="dynParams" class="dyn-params"></div>
+
+      <div class="field field-seed">
+        <span class="field-label">Seed</span>
+        <div class="row">
+          <input id="seed" type="number" placeholder="random" />
+          <button id="seedDice" class="ghost icon" type="button" title="Random seed">🎲</button>
+          <button id="seedClear" class="ghost icon" type="button" title="Clear seed">✕</button>
+        </div>
+      </div>
+
+      <div class="field span2" id="safetyRow"></div>
+    </div>
+
+    <div class="runbar">
+      <button id="run" class="primary big" type="button">Run edit</button>
+      <button id="cancel" class="ghost" type="button" hidden>Cancel</button>
+    </div>
+    <div class="runcost muted small" id="runCost"></div>
+
+    <details class="jsonbox">
+      <summary>Request JSON</summary>
+      <pre id="reqJson"></pre>
+    </details>
+  </section>
+
+  <!-- ------------------------------------------------------------- output -->
+  <section class="panel panel-right">
+    <div class="panel-head">
+      <h2>Result</h2>
+      <div class="status-line">
+        <span id="statusPill" class="pill idle">idle</span>
+        <span id="timer" class="muted small"></span>
+      </div>
+    </div>
+
+    <div id="stage" class="stage">
+      <div class="empty" id="emptyState">
+        <div class="empty-art">🪄</div>
+        <p>Add an image, write a prompt, hit <b>Run edit</b>.</p>
+      </div>
+    </div>
+
+    <div id="meta" class="meta" hidden></div>
+
+    <details class="jsonbox" id="logBox" hidden>
+      <summary>Logs</summary>
+      <pre id="logs"></pre>
+    </details>
+
+    <div class="history-head">
+      <h3>History</h3>
+      <button id="clearHistory" class="ghost small" type="button">clear</button>
+    </div>
+    <div id="history" class="history"></div>
+  </section>
+</main>
+
+<div id="lightbox" class="lightbox" hidden>
+  <img id="lightboxImg" alt="result" />
+</div>
+
+<div id="toasts" class="toasts"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

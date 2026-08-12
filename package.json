@@ -1,0 +1,15 @@
+{
+  "name": "openfal",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Local multi-model playground for fal.ai image editing endpoints",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@fal-ai/client": "^1.6.2",
+    "express": "^4.21.2"
+  }
+}
