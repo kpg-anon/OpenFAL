@@ -5,6 +5,8 @@ one tab per model, your API key held server-side and never exposed to the browse
 
 ![models](https://img.shields.io/badge/models-5-7c6cff) ![license](https://img.shields.io/badge/license-MIT-4ad2c8)
 
+![OpenFAL — the Seedream v4 Edit tab, showing per-model reference slots, output size controls and the live cost estimate](docs/screenshot.png)
+
 ## Quick start
 
 ```bash
