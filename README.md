@@ -3,7 +3,7 @@
 A local, self-hosted playground for [fal.ai](https://fal.ai) **image-editing** endpoints. One UI,
 one tab per model, your API key held server-side and never exposed to the browser.
 
-![models](https://img.shields.io/badge/models-5-7c6cff) ![license](https://img.shields.io/badge/license-MIT-4ad2c8)
+![models](https://img.shields.io/badge/models-7-7c6cff) ![license](https://img.shields.io/badge/license-MIT-4ad2c8)
 
 ![OpenFAL — the Seedream v4 Edit tab, showing per-model reference slots, output size controls and the live cost estimate](docs/screenshot.png)
 
@@ -17,7 +17,30 @@ cp .env.example .env      # then paste your key into FAL_KEY=
 npm start
 ```
 
-Open <http://localhost:5178>. On Windows you can just double-click `start.bat`.
+Open <http://localhost:5178>.
+
+### Windows
+
+Double-click `start.bat` to bring the server up and `stop.bat` to take it down.
+
+`start.bat` launches the server **detached, with no console window** — it prints where things
+went, then exits. Nothing has to stay open to keep the server running, and it survives closing
+the window it was launched from. Because there is no console to print to, output goes to
+`.srv.log` and `.srv.err` (both gitignored, and both truncated on each start).
+
+| Command | What it does |
+|---|---|
+| `start.bat` | Starts in the background, waits for the port to answer, opens the browser |
+| `start.bat -c` | Runs in the current window instead — closing it stops the server. For debugging |
+| `stop.bat` | Stops the running server |
+
+Both scripts resolve the port through `_port.bat`, the same way `server.js` does (`PORT` from the
+environment, then `.env`, then 5178), and both check that the process holding the port is actually
+`node.exe` before starting a duplicate or killing anything.
+
+The server runs as your user, so it stops when you log out — this is a local playground, not a
+service. If you want it back automatically, point a shortcut to `start.bat` from your Startup
+folder (`shell:startup`).
 
 No key in `.env`? The app shows a key field in the header; saving it writes `FAL_KEY` to `.env`
 for next time. Either way the key stays on the server — the page only ever talks to localhost,
@@ -25,9 +48,11 @@ so it never appears in page source or in a request from the tab.
 
 ## Features
 
-- **Five editing models** behind tabs, each with its own schema, parameters and pricing
-- **Reference image slots** (1–6 depending on model) — drag, click, paste, or drop an image URL
+- **Six image-editing models and one reference-to-video model** behind tabs, each with its own schema, parameters and pricing
+- **Reference slots** (1–9 depending on model) — drag, click, paste, or drop a URL. Image models take images; Wan 3.0 also takes video and audio clips
 - **Exact output sizing** with input-relative scaling, a long-side cap and step snapping
+- **Input aspect-ratio detection** for ratio-based models — reads image 1's real geometry and pins
+  the dropdown to the closest supported ratio, instead of leaving the shape to `auto`
 - **Live cost estimate** per run, and your fal **credit balance** in the header
 - **Queue-based submission** so a slow generation survives a page reload, with live queue position and logs
 - **Run history** (last 40) with one-click restore of a run's settings
@@ -42,8 +67,20 @@ so it never appears in page source or in a request from the tab.
 | Seedream v4 Edit | `fal-ai/bytedance/seedream/v4/edit` | 1–6 | auto / preset / exact to 4K | `enable_safety_checker: false` |
 | FLUX.1 Kontext [max] | `fal-ai/flux-pro/kontext/max` | 1 | aspect ratio | `safety_tolerance: 6` |
 | Nano Banana (Gemini 2.5 Flash) | `fal-ai/gemini-25-flash-image/edit` | 1–3 | aspect ratio | `safety_tolerance: 6` |
+| Nano Banana 2 (Gemini 3 Pro) | `fal-ai/nano-banana-2/edit` | 1–6† | aspect ratio × 1K/2K/4K | `safety_tolerance: "6"` |
+| Wan 3.0 Reference-to-Video | `alibaba/wan-3.0/reference-to-video` | 0–9‡ images, videos, audio | aspect ratio × 480p/720p/1080p, 2–30 s | `enable_safety_checker: false`§ |
 
 \* HY-WU normalises output to ~1 MP regardless of what you ask for — see [Findings](#findings).
+
+† The endpoint accepts 14 references; the UI grid caps at 6.
+
+‡ The endpoint accepts 10 images, 5 videos (15 s total, at least 16 fps) and 5 audio clips (15 s total);
+the UI grid holds 9 of any mix. The prompt refers to them per type in slot order: "Image 1", "Video 1".
+Output is billed at $0.05 / $0.10 / $0.20 per second for 480p / 720p / 1080p; reference video seconds
+are billed on top at a rate fal does not publish, so the cost estimate leaves them out.
+
+§ fal documents that disabling the checker "requires account authorization; unauthorized requests are
+always checked." The flag is sent, but on an ordinary account it has no effect.
 
 ## Adding a model
 
@@ -64,6 +101,7 @@ export default defineModel({
   safety: { param: "enable_safety_checker", value: false, kind: "off" },
   note: "Shown in the panel under the tabs.",
   images: { min: 1, max: 3, field: "image_urls" },             // or field: "image_url"
+  // optional: videos / audios take { max, field }, slots sets the grid size, output: "video"
   size: { kind: "dims", modes: ["auto", "preset", "custom"] }, // or kind: "aspect"
   params: ["steps", "guidance", "num_images", "output_format"],
   defaults: { steps: 40 },
@@ -92,6 +130,29 @@ Segmented **auto / preset / exact** for dimension-based models; a ratio select f
 
 Every dimension is re-clamped server-side to 256–4096 px (per-model maximum), so a bad value
 cannot reach fal.
+
+### Aspect-ratio models
+
+Kontext, Nano Banana and Nano Banana 2 have no width/height fields at all — output shape is
+whatever `aspect_ratio` says, so that one dropdown is the entire geometry control.
+
+**Match input image** (on by default) measures image 1 in the browser and pins the dropdown to
+the closest ratio the endpoint actually offers, compared in log space so `4:3` and `3:4` sit an
+equal distance from `1:1`. The line underneath shows what it found and how far the selected
+ratio is from it:
+
+```
+input 1536×2048 · 3:4 → 3:4 · same shape
+input 1920×1200 · 8:5 → 3:2 · 6.7% off — output will be cropped or padded
+```
+
+Picking a ratio by hand switches the matcher off, so an explicit choice is never overwritten.
+This is deliberately not `auto`: `auto` lets the endpoint decide the shape, which silently
+re-crops portrait inputs, whereas a concrete ratio is visible in the request JSON before you
+spend anything on the run.
+
+Nano Banana 2 multiplies that ratio by **Output resolution** (1K / 2K / 4K). Resolution is
+billed at 1× / 1.5× / 2× the base rate, which the cost estimate accounts for.
 
 ## Three layers get called "safety"
 

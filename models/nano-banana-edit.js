@@ -10,6 +10,7 @@ export default defineModel({
   hosting: "partner",
 
   safety: { param: "safety_tolerance", value: 6, kind: "dial" },
+  gated: true,
   note: "Gated at source: blocks come from Google's non-configurable policy enforcement, which refuses even at safety_tolerance 6. Listed so the comparison is on the tab bar; nothing here makes it permissive.",
 
   images: { min: 1, max: 3, field: "image_urls" },

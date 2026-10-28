@@ -34,7 +34,7 @@ export const MODELS = loaded.sort((a, b) => a.order - b.order || a.label.localeC
 
 export const byKey = (key) => MODELS.find((m) => m.key === key) || MODELS[0];
 
-export const buildInput = (model, body, image_urls) => buildPayload(model, body, image_urls);
+export const buildInput = (model, body, refs) => buildPayload(model, body, refs);
 
 /** Registry + control vocabulary for the browser. */
 export function publicRegistry() {

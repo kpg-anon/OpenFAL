@@ -127,10 +127,21 @@
         </div>
       </div>
 
-      <label class="field" id="aspectField">
-        <span class="field-label">Aspect ratio</span>
+      <div class="field size-block" id="aspectField">
+        <span class="field-label">
+          Aspect ratio
+          <output id="aspectCost" class="cost" title="Estimated fal cost for one run"></output>
+        </span>
+
         <select id="aspect_ratio"></select>
-      </label>
+
+        <label class="switch aspect-match">
+          <input id="aspectMatch" type="checkbox" checked />
+          <span>Match input image <span id="aspectBase" class="muted small"></span></span>
+        </label>
+
+        <div id="aspectHint" class="hint muted small"></div>
+      </div>
 
       <!-- per-model controls are generated from the registry into here -->
       <div id="dynParams" class="dyn-params"></div>

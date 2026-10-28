@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { MODELS, byKey, buildInput, publicRegistry } from "./models/index.js";
+import { MEDIA } from "./models/_schema.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ENV_PATH = path.join(__dirname, ".env");
@@ -44,7 +45,8 @@ if (FAL_KEY) applyKey(FAL_KEY);
 /* ---------------------------------------------------------------- server --- */
 
 const app = express();
-app.use(express.json({ limit: "80mb" }));
+// reference videos arrive as base64 data URIs inside the JSON body
+app.use(express.json({ limit: "300mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 const requireKey = (res) => {
@@ -116,17 +118,20 @@ app.post("/api/key", (req, res) => {
   }
 });
 
+const EXT = { jpeg: "jpg", quicktime: "mov", mpeg: "mp3", "x-wav": "wav", "x-m4a": "m4a" };
+
 /** data: URI -> uploaded fal storage URL. Plain http(s) URLs pass through. */
 async function toRemoteUrl(entry, i) {
   const src = typeof entry === "string" ? entry : entry?.url;
-  if (!src) throw new Error(`Image ${i + 1} is empty`);
+  if (!src) throw new Error(`Reference ${i + 1} is empty`);
   if (/^https?:\/\//i.test(src)) return src;
 
   const m = src.match(/^data:([^;,]+)?(;base64)?,(.*)$/s);
-  if (!m) throw new Error(`Image ${i + 1} is not a URL or data URI`);
+  if (!m) throw new Error(`Reference ${i + 1} is not a URL or data URI`);
   const type = m[1] || "image/png";
   const buf = m[2] ? Buffer.from(m[3], "base64") : Buffer.from(decodeURIComponent(m[3]), "utf8");
-  const ext = (type.split("/")[1] || "png").replace("jpeg", "jpg");
+  const sub = type.split("/")[1] || "png";
+  const ext = EXT[sub] || sub;
   const name = (typeof entry === "object" && entry.name) || `input-${i + 1}.${ext}`;
   return await fal.storage.upload(new File([buf], name, { type }));
 }
@@ -137,15 +142,27 @@ app.post("/api/submit", async (req, res) => {
   const model = byKey(b.model);
   try {
     if (!String(b.prompt || "").trim()) throw new Error("Prompt is required");
-    const images = Array.isArray(b.images) ? b.images.filter(Boolean) : [];
-    if (images.length < model.images.min) {
+    const entries = Array.isArray(b.refs) ? b.refs.filter(Boolean) : [];
+
+    // grouped by media type, slot order kept within each group: the prompt says "Video 1"
+    const refs = { image: [], video: [], audio: [] };
+    for (const e of entries) {
+      const media = refs[e.media] ? e.media : "image";
+      const spec = model[MEDIA[media]];
+      if (!spec) throw new Error(`${model.label} does not take ${media} references`);
+      if (refs[media].length >= spec.max) throw new Error(`${model.label} takes at most ${spec.max} ${media} references`);
+      refs[media].push(e);
+    }
+    if (refs.image.length < model.images.min) {
       throw new Error(`${model.label} needs at least ${model.images.min} input image`);
     }
 
-    const image_urls = [];
-    for (let i = 0; i < images.length; i++) image_urls.push(await toRemoteUrl(images[i], i));
+    let n = 0;
+    for (const media of Object.keys(refs)) {
+      for (let i = 0; i < refs[media].length; i++) refs[media][i] = await toRemoteUrl(refs[media][i], n++);
+    }
 
-    const input = buildInput(model, b, image_urls);
+    const input = buildInput(model, b, refs);
     const { request_id } = await fal.queue.submit(model.id, { input });
     console.log(`[submit] ${model.id} ${request_id} ${JSON.stringify({ ...input, prompt: input.prompt.slice(0, 60) + "…" })}`);
     res.json({ requestId: request_id, model: model.key, modelId: model.id, input });
@@ -184,7 +201,7 @@ app.post("/api/cancel/:id", async (req, res) => {
   }
 });
 
-/** Streams a result image through the local origin (CORS-free download / reuse as input). */
+/** Streams a result file through the local origin (CORS-free download / reuse as input). */
 app.get("/api/fetch", async (req, res) => {
   const url = String(req.query.url || "");
   if (!/^https?:\/\//i.test(url)) return res.status(400).json({ error: "Bad url" });
@@ -199,7 +216,7 @@ app.get("/api/fetch", async (req, res) => {
   }
 });
 
-/** Saves a result image into ./outputs so runs survive fal's URL expiry. */
+/** Saves a result file into ./outputs so runs survive fal's URL expiry. */
 app.post("/api/save", async (req, res) => {
   const url = String(req.body?.url || "");
   if (!/^https?:\/\//i.test(url)) return res.status(400).json({ error: "Bad url" });

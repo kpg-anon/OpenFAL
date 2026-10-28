@@ -7,7 +7,7 @@ const FORM_KEY = "openfal.form";
 let MAX_SLOTS = 3;
 
 const state = {
-  slots: [null, null, null],   // { src, name, kind: 'data'|'url', w, h }
+  slots: [null, null, null],   // { src, name, kind: 'data'|'url', media: 'image'|'video'|'audio', w, h, dur }
   models: [],
   paramSpecs: {},              // the PARAMS vocabulary from models/_schema.js
   paramEls: {},                // name -> { el, spec } for the controls on screen
@@ -21,6 +21,17 @@ const state = {
 };
 
 const qModel = () => `model=${encodeURIComponent(state.model?.key || "")}`;
+
+/** Reference media type -> the model spec key describing it (mirrors MEDIA in models/_schema.js). */
+const MEDIA_KEY = { image: "images", video: "videos", audio: "audios" };
+const accepts = (m, media) => Boolean(m?.[MEDIA_KEY[media]]);
+const acceptedMedia = (m) => Object.keys(MEDIA_KEY).filter((k) => accepts(m, k));
+const mediaOfType = (type) => /^(image|video|audio)\//.exec(type || "")?.[1] || null;
+const mediaOfUrl = (url) =>
+  /\.(mp4|webm|mov|m4v)(\?|$)/i.test(url) ? "video"
+  : /\.(mp3|wav|m4a|ogg|flac|aac)(\?|$)/i.test(url) ? "audio"
+  : "image";
+const runLabel = () => (state.model?.output === "video" ? "Generate video" : "Run edit");
 
 /* --------------------------------------------------------------- toasts -- */
 
@@ -110,7 +121,7 @@ function renderTabs() {
     b.dataset.key = m.key;
     b.type = "button";
     // pip marks where moderation lives, not how permissive a model is
-    const pip = m.safety.kind === "off" ? "" : m.hosting === "partner" && m.key === "nano-banana" ? "gated" : "dial";
+    const pip = m.gated ? "gated" : m.safety.kind === "off" ? "" : "dial";
     b.innerHTML = `<span class="pip ${pip}"></span>${m.label}`;
     b.title = `${m.id}\n${m.blurb}`;
     b.onclick = () => { applyModel(m.key); saveForm(); };
@@ -127,7 +138,11 @@ function applyModel(key) {
   $("modelId").textContent = m.id;
 
   const badge = $("safetyBadge");
-  if (m.safety.kind === "off") {
+  if (m.safety.kind === "off" && m.gated) {
+    badge.className = "badge badge-dial";
+    badge.textContent = "safety checker: off (if authorised)";
+    badge.title = "enable_safety_checker is sent as false, but this endpoint only honours it on accounts fal has authorised";
+  } else if (m.safety.kind === "off") {
     badge.className = "badge badge-off";
     badge.textContent = "safety checker: off";
     badge.title = "enable_safety_checker is sent as false, applied server-side";
@@ -136,20 +151,23 @@ function applyModel(key) {
     badge.textContent = `safety_tolerance: ${m.safety.value}`;
     badge.title = "Partner-served: no enable_safety_checker exists. This dial only relaxes fal's side.";
   }
-  const cls = m.safety.kind === "off" ? "" : (m.key === "nano-banana" ? "gated" : "dial");
+  const cls = m.gated ? "gated" : m.safety.kind === "off" ? "" : "dial";
   $("modelNote").className = "model-note " + cls;
   $("modelNote").innerHTML = `<b>${escapeHtml(m.label)}</b> — ${escapeHtml(m.blurb)}<br>${escapeHtml(m.note)}`;
   $("safetyRow").innerHTML = `<div class="safety-line">sends <b>${m.safety.param}</b>:
     <span class="val-${m.safety.kind}">${m.safety.value}</span>
     <span class="muted">· ${m.hosting === "fal" ? "fal-hosted weights" : "partner-served"}</span></div>`;
 
-  MAX_SLOTS = m.images.max;
+  MAX_SLOTS = m.slots;
   state.slots.length = MAX_SLOTS;
   for (let i = 0; i < MAX_SLOTS; i++) if (!state.slots[i]) state.slots[i] = null;
-  $("slotHint").textContent = m.images.max === 1
-    ? "1 image · drag, click or paste"
-    : `up to ${m.images.max} images · drag, click or paste`;
+  const kinds = acceptedMedia(m);
+  $("slotHint").textContent = kinds.length > 1
+    ? `${kinds.join(" / ")} · up to ${m.slots} · drag, click or paste`
+    : m.slots === 1 ? "1 image · drag, click or paste"
+    : `up to ${m.slots} images · drag, click or paste`;
   renderSlots();
+  if (!$("run").disabled) $("run").textContent = runLabel();
 
   renderParams(m);
   restoreParams(m.key);
@@ -253,19 +271,31 @@ const paramVal = (name, dflt) => (state.paramEls[name] ? paramValues()[name] : d
 
 /* --------------------------------------------------------------- slots -- */
 
+const previewSrc = (s) => (s.kind === "url" ? "/api/fetch?url=" + encodeURIComponent(s.src) : s.src);
+
 function renderSlots() {
   const wrap = $("slots");
   wrap.innerHTML = "";
+  const multi = acceptedMedia(state.model).length > 1;
+  // numbered per media type over the slots actually sent, matching "Image 1" / "Video 1" in prompts
+  const counts = {};
   for (let i = 0; i < MAX_SLOTS; i++) {
     const s = state.slots[i];
     const el = document.createElement("div");
-    el.className = "slot" + (s ? " filled" : "");
+    const unused = s && !accepts(state.model, s.media);
+    el.className = "slot" + (s ? " filled" : "") + (unused ? " unused" : "");
     el.dataset.i = String(i);
-    el.innerHTML = s
-      ? `<img src="${s.kind === "url" ? "/api/fetch?url=" + encodeURIComponent(s.src) : s.src}" alt="">
-         <span class="tag">image ${i + 1}</span>
-         <button class="kill" title="Remove">✕</button>`
-      : `<div class="ph"><b>+</b>image ${i + 1}</div>`;
+    if (s) {
+      const n = unused ? "" : ` ${(counts[s.media] = (counts[s.media] || 0) + 1)}`;
+      const view = s.media === "video" ? `<video src="${previewSrc(s)}" muted preload="metadata"></video>`
+        : s.media === "audio" ? `<div class="ph"><b>♪</b>${escapeHtml(s.name || "audio")}</div>`
+        : `<img src="${previewSrc(s)}" alt="">`;
+      el.innerHTML = `${view}
+         <span class="tag">${s.media}${n}${s.dur ? ` · ${s.dur.toFixed(1)}s` : ""}${unused ? " · not used" : ""}</span>
+         <button class="kill" title="Remove">✕</button>`;
+    } else {
+      el.innerHTML = `<div class="ph"><b>+</b>${multi ? "reference" : `image ${i + 1}`}</div>`;
+    }
 
     if (!s) el.onclick = () => pickFile(i);
     const kill = el.querySelector(".kill");
@@ -286,16 +316,41 @@ function renderSlots() {
 function pickFile(i) {
   const inp = document.createElement("input");
   inp.type = "file";
-  inp.accept = "image/*";
+  inp.accept = acceptedMedia(state.model).map((k) => `${k}/*`).join(",");
   inp.onchange = async () => { if (inp.files[0]) await setSlotFromFile(i, inp.files[0]); };
   inp.click();
 }
 
 async function handleDrop(e, i) {
-  const file = [...(e.dataTransfer.files || [])].find((f) => f.type.startsWith("image/"));
+  const file = [...(e.dataTransfer.files || [])].find((f) => accepts(state.model, mediaOfType(f.type)));
   if (file) return setSlotFromFile(i, file);
   const text = (e.dataTransfer.getData("text/uri-list") || e.dataTransfer.getData("text/plain") || "").trim();
-  if (/^https?:\/\//i.test(text)) setSlot(i, { src: text, name: text.split("/").pop(), kind: "url" });
+  if (/^https?:\/\//i.test(text)) setSlotFromUrl(i, text);
+}
+
+function setSlotFromUrl(i, url) {
+  const media = mediaOfUrl(url);
+  if (!accepts(state.model, media)) return toast(`${state.model.label} does not take ${media} references`, "err");
+  setSlot(i, { src: url, name: url.split("/").pop(), kind: "url", media });
+}
+
+/** Reads pixel size (image, video) and duration (video, audio) in the browser. */
+function measure(slot, done) {
+  const src = previewSrc(slot);
+  if (slot.media === "image") {
+    const img = new Image();
+    img.onload = () => { slot.w = img.naturalWidth; slot.h = img.naturalHeight; done(); };
+    img.src = src;
+    return;
+  }
+  const el = document.createElement(slot.media);
+  el.preload = "metadata";
+  el.onloadedmetadata = () => {
+    if (el.videoWidth) { slot.w = el.videoWidth; slot.h = el.videoHeight; }
+    if (Number.isFinite(el.duration)) slot.dur = el.duration;
+    done();
+  };
+  el.src = src;
 }
 
 /** Single entry point for filling a slot: renders, then measures for the size panel. */
@@ -303,14 +358,13 @@ function setSlot(i, slot) {
   state.slots[i] = slot;
   renderSlots();
   syncJson();
-  if (slot && (!slot.w || !slot.h)) {
-    const img = new Image();
-    img.onload = () => {
-      slot.w = img.naturalWidth;
-      slot.h = img.naturalHeight;
-      if (state.slots[i] === slot) sizeCtl.onBaseChange();
-    };
-    img.src = slot.kind === "url" ? "/api/fetch?url=" + encodeURIComponent(slot.src) : slot.src;
+  const known = slot && (slot.media === "image" ? slot.w && slot.h : slot.dur);
+  if (slot && !known) {
+    measure(slot, () => {
+      if (state.slots[i] !== slot) return;
+      if (slot.media !== "image") renderSlots();   // the tag shows the measured duration
+      sizeCtl.onBaseChange();
+    });
   } else {
     sizeCtl.onBaseChange();
   }
@@ -321,29 +375,38 @@ function firstEmpty() {
   return i === -1 ? 0 : i;
 }
 
+// the whole file travels to the local server as a base64 data URI, so keep these well under its body limit
+const MAX_MB = { image: 24, video: 100, audio: 25 };
+
 async function setSlotFromFile(i, file) {
-  if (file.size > 24 * 1024 * 1024) return toast("Image is over 24 MB — please shrink it first", "err");
+  const media = mediaOfType(file.type);
+  if (!accepts(state.model, media)) {
+    return toast(`${state.model.label} does not take ${media || file.type || "this file type"} references`, "err");
+  }
+  if (file.size > MAX_MB[media] * 1024 * 1024) {
+    return toast(`${file.name || media} is over ${MAX_MB[media]} MB — please shrink it first`, "err");
+  }
   const src = await new Promise((res, rej) => {
     const fr = new FileReader();
     fr.onload = () => res(fr.result);
     fr.onerror = rej;
     fr.readAsDataURL(file);
   });
-  setSlot(i, { src, name: file.name || `image-${i + 1}.png`, kind: "data" });
+  setSlot(i, { src, name: file.name || `${media}-${i + 1}`, kind: "data", media });
 }
 
 document.addEventListener("paste", async (e) => {
   // An image on the clipboard always fills a slot, even while the prompt has focus.
-  const item = [...(e.clipboardData?.items || [])].find((it) => it.type.startsWith("image/"));
+  const item = [...(e.clipboardData?.items || [])].find((it) => accepts(state.model, mediaOfType(it.type)));
   if (item) {
     e.preventDefault();
     return setSlotFromFile(firstEmpty(), item.getAsFile());
   }
   const inField = document.activeElement && /INPUT|TEXTAREA/.test(document.activeElement.tagName);
   const txt = (e.clipboardData?.getData("text") || "").trim();
-  if (inField || !/^https?:\/\/\S+\.(png|jpe?g|webp|gif)/i.test(txt)) return;
+  if (inField || !/^https?:\/\/\S+\.(png|jpe?g|webp|gif|mp4|webm|mov|m4v|mp3|wav|m4a|ogg|flac|aac)/i.test(txt)) return;
   e.preventDefault();
-  setSlot(firstEmpty(), { src: txt, name: txt.split("/").pop(), kind: "url" });
+  setSlotFromUrl(firstEmpty(), txt);
 });
 
 /* ----------------------------------------------------------- size panel -- */
@@ -412,6 +475,10 @@ const sizeCtl = {
   onBaseChange() {
     if (this.mode === "custom" && $("linkInput").checked) this.derive();
     this.refresh();
+    // an image measures asynchronously, so the ratio matcher can move the dropdown after
+    // setSlot's own syncJson has already run — re-sync or the preview shows the old ratio
+    syncJson();
+    saveForm();
   },
 
   effective() {
@@ -426,6 +493,7 @@ const sizeCtl = {
   },
 
   refresh() {
+    refreshAspect();
     const base = this.base();
     $("baseDims").textContent = base ? `(${base.w}×${base.h})` : "(no image yet)";
     $("scaleOut").value = Number($("scale").value).toFixed(2) + "×";
@@ -455,23 +523,110 @@ const sizeCtl = {
 
     const cost = costLabel(eff);
     $("sizeCost").value = cost;
-    $("runCost").textContent = cost ? `estimated ${cost.replace(/^.*· /, "")} per run` : "";
+    $("aspectCost").value = cost;
+    const refVideo = state.model?.pricing?.perSecond &&
+      state.slots.some((s) => s?.media === "video" && accepts(state.model, "video"));
+    $("runCost").textContent = cost
+      ? `estimated ${cost.replace(/^.*· /, "")} per run`
+        + (refVideo ? " + reference video seconds (fal does not publish that rate)" : "")
+      : "";
   },
 };
 
-/** Cost line: per-megapixel for models priced that way, otherwise per image. */
+/* --------------------------------------------------------- aspect ratio -- */
+
+const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+
+/** 1536×2048 -> "3:4". Falls back to a decimal when the reduction is not a tidy one. */
+function ratioLabel(w, h) {
+  const g = gcd(w, h) || 1;
+  const a = w / g, b = h / g;
+  return a <= 40 && b <= 40 ? `${a}:${b}` : (w / h).toFixed(3);
+}
+
+/** How far a "W:H" option sits from a target ratio, in log space so 4:3 and 3:4 are
+ *  equidistant from 1:1. Returns null for non-ratio options ("auto", ""). */
+function ratioDistance(option, target) {
+  const m = /^(\d+):(\d+)$/.exec(option);
+  if (!m) return null;
+  return Math.abs(Math.log(Number(m[1]) / Number(m[2]) / target));
+}
+
+/** The closest ratio this model actually offers for a given input image. */
+function nearestAspect(w, h, options) {
+  const target = w / h;
+  let best = null, bestD = Infinity;
+  for (const o of options || []) {
+    const d = ratioDistance(o, target);
+    if (d !== null && d < bestD) { bestD = d; best = o; }
+  }
+  return best === null ? null : { value: best, off: Math.exp(bestD) - 1 };
+}
+
+/**
+ * Reads the input image's real geometry and, while "match input" is on, pins the
+ * dropdown to the nearest ratio the endpoint supports. Aspect-only models have no
+ * width/height fields, so this is the one place output shape gets decided — leaving
+ * it on "auto" hands that choice to the endpoint.
+ */
+function refreshAspect() {
+  const m = state.model;
+  if (!m || m.size.kind !== "aspect") return;
+
+  const base = sizeCtl.base();
+  const near = base && nearestAspect(base.w, base.h, m.size.options);
+  if ($("aspectMatch").checked && near) $("aspect_ratio").value = near.value;
+
+  $("aspectBase").textContent = base ? `(${base.w}×${base.h})` : "(no image yet)";
+
+  const hint = $("aspectHint");
+  if (!base) {
+    hint.textContent = "add an image to read its ratio";
+    return;
+  }
+
+  const sel = $("aspect_ratio").value;
+  const drift = ratioDistance(sel, base.w / base.h);
+  let line = `input <b>${base.w}×${base.h}</b> · ${ratioLabel(base.w, base.h)}`;
+
+  if (drift === null) {
+    // "auto" / omitted: the endpoint picks, and it does not have to pick the input's shape
+    line += ` → <b>${sel || "unset"}</b>`
+      + (near ? ` <span class="warn">· ${near.value} is the closest supported match</span>` : "");
+  } else {
+    const pct = (Math.exp(drift) - 1) * 100;
+    line += ` → <b>${sel}</b> `
+      + (pct < 0.5
+        ? "· same shape"
+        : `<span class="warn">· ${pct.toFixed(1)}% off — output will be cropped or padded</span>`);
+  }
+  hint.innerHTML = line;
+}
+
+$("aspectMatch").onchange = () => { sizeCtl.refresh(); syncJson(); saveForm(); };
+
+/** Cost line: per second of video, per megapixel, or per image, whichever the model bills by. */
 function costLabel(eff) {
   const m = state.model;
   if (!m) return "";
   const n = paramVal("num_images", 1) || 1;
   const p = m.pricing || {};
+  if (p.perSecond) {
+    const secs = paramVal("duration", 5);
+    const rate = p.perSecond[paramVal("video_resolution", "1080p")] ?? 0;
+    return `${secs} s · $${(secs * rate).toFixed(2)}`;
+  }
   if (p.mp) {
     if (!eff) return "";
     const mp = (eff.w * eff.h) / 1e6;
     const rate = paramVal("thinking", false) ? (p.mpThinking || p.mp) : p.mp;
     return `${mp.toFixed(2)} MP · ${eff.exact ? "" : "~"}$${(mp * rate * n).toFixed(2)}`;
   }
-  if (p.perImage) return `$${(p.perImage * n).toFixed(2)}`;
+  if (p.perImage) {
+    // models that bill a bigger output at a multiple of the base rate
+    const mult = p.resolutionMult?.[paramVal("resolution", "1K")] ?? 1;
+    return `$${(p.perImage * mult * n).toFixed(2)}`;
+  }
   return "";
 }
 
@@ -483,7 +638,12 @@ $("sizeMode").onclick = (e) => {
 };
 
 $("sizePreset").onchange = () => { sizeCtl.refresh(); syncJson(); saveForm(); };
-$("aspect_ratio").onchange = () => { syncJson(); saveForm(); };
+
+$("aspect_ratio").onchange = () => {
+  // picking a ratio by hand outranks the matcher, which would otherwise overwrite it
+  $("aspectMatch").checked = false;
+  sizeCtl.refresh(); syncJson(); saveForm();
+};
 
 $("linkInput").onchange = () => {
   if ($("linkInput").checked) sizeCtl.derive();
@@ -580,15 +740,24 @@ $("presets").onclick = (e) => {
   syncJson(); saveForm();
 };
 
+/** Filled slots the current model can take; a slot left over from another tab is marked "not used". */
+const usedSlots = () => state.slots.filter((s) => s && accepts(state.model, s.media));
+
 /** Mirrors models/_schema.js buildPayload so the preview matches what gets sent. */
 function buildInput() {
   const m = state.model;
   if (!m) return {};
-  const imgs = state.slots.filter(Boolean).map((s) => (s.kind === "url" ? s.src : `<${s.name}>`));
+  const groups = { image: [], video: [], audio: [] };
+  for (const s of usedSlots()) groups[s.media].push(s.kind === "url" ? s.src : `<${s.name}>`);
 
   const input = { prompt: $("prompt").value.trim() };
-  if (m.images.field === "image_url") input.image_url = imgs[0];
-  else input.image_urls = imgs.slice(0, m.images.max);
+  for (const [media, key] of Object.entries(MEDIA_KEY)) {
+    const spec = m[key];
+    const list = groups[media];
+    if (!spec) continue;
+    if (spec.field === "image_url") input.image_url = list[0];
+    else if (list.length || spec.min > 0) input[spec.field] = list.slice(0, spec.max);
+  }
 
   if (m.size.kind === "aspect") {
     const ar = $("aspect_ratio").value;
@@ -632,6 +801,7 @@ function saveForm() {
     seed: $("seed").value,
     paramsByModel: { ...(prev.paramsByModel || {}), ...(key ? { [key]: paramValues() } : {}) },
     aspectByModel: { ...(prev.aspectByModel || {}), ...(key ? { [key]: $("aspect_ratio").value } : {}) },
+    aspectMatch: $("aspectMatch").checked,
     size: {
       mode: sizeCtl.mode,
       preset: $("sizePreset").value,
@@ -647,6 +817,7 @@ function loadForm() {
   const f = readForm();
   if (f.prompt) $("prompt").value = f.prompt;
   if (f.seed) $("seed").value = f.seed;
+  if (typeof f.aspectMatch === "boolean") $("aspectMatch").checked = f.aspectMatch;
   const s = f.size || {};
   if (s.preset) $("sizePreset").value = s.preset;
   if (s.w) $("out_w").value = s.w;
@@ -695,14 +866,16 @@ function showWorking(label) {
 
 function busy(on) {
   $("run").disabled = on;
-  $("run").textContent = on ? "Running…" : "Run edit";
+  $("run").textContent = on ? "Running…" : runLabel();
   $("cancel").hidden = !on;
 }
 
 $("run").onclick = async () => {
-  const images = state.slots.filter(Boolean);
+  const refs = usedSlots();
   if (!$("prompt").value.trim()) return toast("Write a prompt first", "err");
-  if (images.length < (state.model?.images.min ?? 1)) return toast("Add at least one input image", "err");
+  if (refs.filter((s) => s.media === "image").length < (state.model?.images.min ?? 1)) {
+    return toast("Add at least one input image", "err");
+  }
   state.lastModelKey = state.model.key;
 
   busy(true);
@@ -710,14 +883,14 @@ $("run").onclick = async () => {
   $("meta").hidden = true;
   $("logBox").hidden = true;
   $("logs").textContent = "";
-  showWorking("Uploading images…");
+  showWorking(refs.length ? "Uploading references…" : "Submitting…");
   startTicker();
 
   try {
     const body = {
       model: state.model.key,
       prompt: $("prompt").value.trim(),
-      images: images.map((s) => ({ url: s.src, name: s.name })),
+      refs: refs.map((s) => ({ url: s.src, name: s.name, media: s.media })),
       image_size: imageSizeValue(),
       aspect_ratio: $("aspect_ratio").value,
       params: paramValues(),
@@ -772,7 +945,10 @@ function poll() {
         if (label) label.textContent = s.queue_position != null ? `In queue (position ${s.queue_position})…` : "Queued…";
       } else if (s.status === "IN_PROGRESS") {
         setStatus("running", "running");
-        if (label) label.textContent = paramVal("thinking", false) ? "Thinking + diffusing…" : "Diffusing…";
+        if (label) {
+          label.textContent = state.model?.output === "video" ? "Generating video…"
+            : paramVal("thinking", false) ? "Thinking + diffusing…" : "Diffusing…";
+        }
       } else if (s.status === "COMPLETED") {
         return finish();
       } else {
@@ -831,44 +1007,56 @@ function fail(msg, info) {
 
 /* -------------------------------------------------------------- results -- */
 
+function resultCard(file, media, seed, idx) {
+  const local = "/api/fetch?url=" + encodeURIComponent(file.url);
+  const ext = (file.content_type || (media === "video" ? "video/mp4" : "image/png")).split("/")[1];
+  const card = document.createElement("div");
+  card.className = "result-card";
+  // video plays straight from fal's CDN so seeking gets range requests; the proxy is only for download
+  const view = media === "video"
+    ? `<video src="${escapeHtml(file.url)}" controls loop playsinline></video>`
+    : `<img src="${local}" alt="result ${idx + 1}" />`;
+  card.innerHTML = `${view}
+    <div class="result-actions">
+      <a href="${local}" download="openfal-${seed ?? "out"}-${idx + 1}.${ext}">download</a>
+      <button data-act="save">save to outputs/</button>
+      <button data-act="reuse">use as input 1</button>
+      <button data-act="open">open original</button>
+    </div>`;
+  if (media === "image") card.querySelector("img").onclick = () => openLightbox(local);
+  card.querySelector('[data-act="open"]').onclick = () => window.open(file.url, "_blank");
+  card.querySelector('[data-act="save"]').onclick = async (e) => {
+    e.target.textContent = "saving…";
+    const rr = await fetch("/api/save", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: file.url }),
+    });
+    const jj = await rr.json();
+    e.target.textContent = rr.ok ? "saved ✓" : "failed";
+    toast(rr.ok ? `Saved to ${jj.path}` : jj.error, rr.ok ? "ok" : "err");
+  };
+  card.querySelector('[data-act="reuse"]').onclick = () => {
+    if (!accepts(state.model, media)) return toast(`${state.model.label} does not take ${media} references`, "err");
+    setSlot(0, {
+      src: file.url, name: file.file_name || `result.${ext}`, kind: "url", media,
+      w: file.width, h: file.height, dur: file.duration,
+    });
+    toast(`Result loaded as ${media} in slot 1`, "ok");
+  };
+  return card;
+}
+
 function renderResult(data) {
   const imgs = data.images || [];
+  const video = data.video?.url ? data.video : null;
   const stage = $("stage");
   stage.className = "stage" + (imgs.length > 1 ? " grid-2" : "");
   stage.innerHTML = "";
 
-  imgs.forEach((im, idx) => {
-    const local = "/api/fetch?url=" + encodeURIComponent(im.url);
-    const card = document.createElement("div");
-    card.className = "result-card";
-    card.innerHTML = `
-      <img src="${local}" alt="result ${idx + 1}" />
-      <div class="result-actions">
-        <a href="${local}" download="openfal-${data.seed ?? "out"}-${idx + 1}.${(im.content_type || "image/png").split("/")[1]}">download</a>
-        <button data-act="save">save to outputs/</button>
-        <button data-act="reuse">use as input 1</button>
-        <button data-act="open">open original</button>
-      </div>`;
-    card.querySelector("img").onclick = () => openLightbox(local);
-    card.querySelector('[data-act="open"]').onclick = () => window.open(im.url, "_blank");
-    card.querySelector('[data-act="save"]').onclick = async (e) => {
-      e.target.textContent = "saving…";
-      const rr = await fetch("/api/save", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ url: im.url }),
-      });
-      const jj = await rr.json();
-      e.target.textContent = rr.ok ? "saved ✓" : "failed";
-      toast(rr.ok ? `Saved to ${jj.path}` : jj.error, rr.ok ? "ok" : "err");
-    };
-    card.querySelector('[data-act="reuse"]').onclick = () => {
-      setSlot(0, { src: im.url, name: im.file_name || "result.png", kind: "url", w: im.width, h: im.height });
-      toast("Result loaded as image 1", "ok");
-    };
-    stage.appendChild(card);
-  });
+  if (video) stage.appendChild(resultCard(video, "video", data.seed, 0));
+  imgs.forEach((im, idx) => stage.appendChild(resultCard(im, "image", data.seed, idx)));
 
-  const first = imgs[0] || {};
+  const first = imgs[0] || video || {};
   const li = state.lastInput || {};
   const usedModel = state.models.find((x) => x.key === state.lastModelKey) || state.model;
   const safetyParam = usedModel?.safety?.param;
@@ -879,16 +1067,25 @@ function renderResult(data) {
   meta.hidden = false;
   meta.innerHTML = [
     usedModel ? `<span>${escapeHtml(usedModel.label)}</span>` : "",
-    first.width ? `<span><b>${first.width}×${first.height}</b> px</span>` : "",
+    first.width ? `<span><b>${first.width}×${first.height}</b> px${first.height ? ` · ${ratioLabel(first.width, first.height)}` : ""}</span>` : "",
+    li.resolution ? `<span>res <b>${escapeHtml(li.resolution)}</b></span>` : "",
+    li.aspect_ratio ? `<span>ratio <b>${escapeHtml(li.aspect_ratio)}</b></span>` : "",
+    video?.duration ? `<span><b>${Number(video.duration).toFixed(1)}</b> s${video.fps ? ` · ${video.fps} fps` : ""}</span>` : "",
+    li.audio != null ? `<span>audio <b>${li.audio ? "on" : "off"}</b></span>` : "",
     data.seed != null ? `<span class="copyseed" title="Click to reuse this seed">seed <b>${data.seed}</b></span>` : "",
     li.num_inference_steps != null ? `<span>steps <b>${li.num_inference_steps}</b></span>` : "",
     li.guidance_scale != null ? `<span>cfg <b>${li.guidance_scale}</b></span>` : "",
     li.enable_thinking != null ? `<span>thinking <b>${li.enable_thinking ? "on" : "off"}</b></span>` : "",
     safetyParam ? `<span>${safetyParam} <b>${li[safetyParam]}</b></span>` : "",
     timing ? `<span>${escapeHtml(timing)}</span>` : "",
+    // prompt expansion rewrites the prompt server-side; this is the text the model actually saw
+    data.actual_prompt && data.actual_prompt !== li.prompt
+      ? `<span class="copyprompt" title="${escapeHtml(data.actual_prompt)}">prompt rewritten · <b>click to use</b></span>` : "",
   ].filter(Boolean).join("");
   const cs = meta.querySelector(".copyseed");
   if (cs) cs.onclick = () => { $("seed").value = data.seed; syncJson(); saveForm(); toast("Seed pinned", "ok"); };
+  const cp = meta.querySelector(".copyprompt");
+  if (cp) cp.onclick = () => { $("prompt").value = data.actual_prompt; syncJson(); saveForm(); toast("Rewritten prompt loaded", "ok"); };
 }
 
 function openLightbox(src) {
@@ -916,15 +1113,24 @@ function pushHistory(data) {
     input: state.lastInput,
     seed: data.seed,
     images: (data.images || []).map((i) => ({ url: i.url, width: i.width, height: i.height, content_type: i.content_type, file_name: i.file_name })),
+    video: data.video?.url ? {
+      url: data.video.url, width: data.video.width, height: data.video.height, duration: data.video.duration,
+      fps: data.video.fps, content_type: data.video.content_type, file_name: data.video.file_name,
+    } : undefined,
+    actual_prompt: data.actual_prompt,
   });
   localStorage.setItem(HIST_KEY, JSON.stringify(items.slice(0, 40)));
   renderHistory();
 }
 
-/** field name -> PARAMS key, for restoring a run's settings from its raw payload. */
+/** field name -> PARAMS key for the current model, for restoring a run's settings from its raw
+ *  payload. Scoped to the model because two params can share a field (`resolution`). */
 function fieldToParam() {
   const map = {};
-  for (const [name, spec] of Object.entries(state.paramSpecs)) map[spec.field] = name;
+  for (const name of state.model?.params || []) {
+    const spec = state.paramSpecs[name];
+    if (spec) map[spec.field] = name;
+  }
   return map;
 }
 
@@ -932,24 +1138,33 @@ function renderHistory() {
   const box = $("history");
   box.innerHTML = "";
   for (const item of readHistory()) {
-    if (!item.images?.length) continue;
+    if (!item.images?.length && !item.video) continue;
     const el = document.createElement("div");
     el.className = "history-item";
     const label = state.models.find((x) => x.key === item.model)?.label || item.model || "";
     el.title = `${label}\n${new Date(item.ts).toLocaleString()}\nseed ${item.seed}\n\n${item.prompt}`;
-    el.innerHTML = `<img src="/api/fetch?url=${encodeURIComponent(item.images[0].url)}" alt="">`;
+    // #t= asks for a frame slightly in, so the thumbnail is not a black first frame
+    el.innerHTML = item.video
+      ? `<video src="${escapeHtml(item.video.url)}#t=0.5" muted preload="metadata"></video>`
+      : `<img src="/api/fetch?url=${encodeURIComponent(item.images[0].url)}" alt="">`;
     el.onclick = () => {
       if (item.model) applyModel(item.model);
       state.lastInput = item.input;
       state.lastModelKey = item.model;
       setStatus("restored", "done");
       $("timer").textContent = "";
-      renderResult({ images: item.images, seed: item.seed, timings: {} });
+      renderResult({
+        images: item.images, video: item.video, actual_prompt: item.actual_prompt,
+        seed: item.seed, timings: {},
+      });
       const inp = item.input;
       if (inp) {
         $("prompt").value = inp.prompt || "";
         if (inp.image_size !== undefined) applySizeFromInput(inp.image_size);
-        if (inp.aspect_ratio) $("aspect_ratio").value = inp.aspect_ratio;
+        if (inp.aspect_ratio) {
+          $("aspectMatch").checked = false;   // replay the ratio the run used, not today's input
+          $("aspect_ratio").value = inp.aspect_ratio;
+        }
         const back = fieldToParam();
         for (const [field, value] of Object.entries(inp)) {
           if (back[field]) setParam(back[field], value);

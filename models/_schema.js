@@ -39,6 +39,27 @@ export const PARAMS = {
     field: "output_format", type: "select", label: "Output format",
     options: ["png", "jpeg"], default: "png",
   },
+  resolution: {
+    field: "resolution", type: "select", label: "Output resolution",
+    options: ["1K", "2K", "4K"], default: "1K",
+  },
+  // same fal field as `resolution`, different vocabulary — video endpoints name a line count
+  video_resolution: {
+    field: "resolution", type: "select", label: "Resolution",
+    options: ["480p", "720p", "1080p"], default: "1080p",
+  },
+  duration: {
+    field: "duration", type: "range", label: "Duration (s)",
+    min: 2, max: 30, step: 1, default: 5,
+  },
+  audio: {
+    field: "audio", type: "toggle", label: "Audio",
+    hint: "generate a soundtrack", default: true,
+  },
+  prompt_expansion: {
+    field: "enable_prompt_expansion", type: "toggle", label: "Prompt expansion",
+    hint: "adds 20–60 s", default: true,
+  },
   thinking: {
     field: "enable_thinking", type: "toggle", label: "Thinking",
     hint: "slower, better", default: true,
@@ -74,6 +95,9 @@ function normalizeSize(v, model) {
 
 const REQUIRED = ["key", "id", "label", "images", "size", "safety"];
 
+/** Reference media a model can take, and the spec key that describes each. */
+export const MEDIA = { image: "images", video: "videos", audio: "audios" };
+
 /**
  * Validates one model definition and fills in the parts every model shares.
  * Throws loudly at boot rather than failing mysteriously at submit time.
@@ -94,23 +118,40 @@ export function defineModel(spec) {
   if (spec.safety.param && spec.safety.value === undefined) {
     throw new Error(`Model "${spec.key}" declares safety.param without a value`);
   }
+  if (spec.output !== undefined && !["image", "video"].includes(spec.output)) {
+    throw new Error(`Model "${spec.key}" has unknown output "${spec.output}"`);
+  }
+  for (const key of ["videos", "audios"]) {
+    if (spec[key] && (!spec[key].field || !spec[key].max)) {
+      throw new Error(`Model "${spec.key}" ${key} needs both field and max`);
+    }
+  }
   return {
     blurb: "", note: "", docs: "", hosting: "fal", params: [], defaults: {}, pricing: {},
-    order: 100,
+    // gated = the provider enforces its own policy above fal's dial, so the dial is not the story
+    order: 100, gated: false, output: "image", videos: null, audios: null,
     ...spec,
     images: { min: 1, field: "image_urls", ...spec.images },
+    // slots in the UI grid, shared by every media type the model takes
+    slots: spec.slots ?? spec.images.max,
   };
 }
 
 /**
  * Assembles one model's fal payload from the generic form body.
- * `b.params` is keyed by PARAMS name; `image_urls` are already uploaded.
+ * `b.params` is keyed by PARAMS name; `refs` maps media type -> already-uploaded URLs.
  */
-export function buildPayload(model, b, image_urls) {
+export function buildPayload(model, b, refs) {
   const input = { prompt: String(b.prompt || "").trim() };
 
-  if (model.images.field === "image_url") input.image_url = image_urls[0];
-  else input.image_urls = image_urls.slice(0, model.images.max);
+  for (const [media, key] of Object.entries(MEDIA)) {
+    const spec = model[key];
+    const urls = refs[media] || [];
+    if (!spec) continue;
+    if (spec.field === "image_url") input.image_url = urls[0];
+    // optional reference lists are left out entirely rather than sent empty
+    else if (urls.length || spec.min > 0) input[spec.field] = urls.slice(0, spec.max);
+  }
 
   if (model.size.kind === "aspect") {
     const ar = String(b.aspect_ratio ?? model.size.default ?? "");
